@@ -1,20 +1,20 @@
 # DataFeedParserPy
 
-A Python CLI tool that fetches an XML feed from a remote server, parses it and stores it into a SQLite database.
+A Python CLI tool that fetches an XML EPG feed from a remote server, parses it and stores it into a SQLite database.
 
 ## Features
 
-- Fetches XML feed over HTTPS with custom SSL certificate support
-- Parses XML into structured data
-- Stores data in a normalized SQLite database (3 tables)
+- Fetches XML feed over HTTPS
+- Parses XMLTV format into structured data
+- Stores data in a SQLite database
 - Idempotent ingestion — safe to run multiple times
 - SQL statistics queries
 - Unit tests with in-memory database and network mock
+- No external dependencies — stdlib only
 
 ## Requirements
 
 - Python 3.11+
-- No external dependencies — stdlib only
 
 ## Installation
 ```bash
@@ -24,9 +24,14 @@ cd DataFeedParserPy
 
 ## Usage
 
-### Ingest the feed
+### Ingest a feed
 ```bash
-python ingest.py
+python ingest.py <url>
+```
+
+#### Example — Arte
+```bash
+python ingest.py "https://epg.pw/api/epg.xml?channel_id=55730"
 ```
 
 ### Run the stats
@@ -43,18 +48,15 @@ python -m unittest tests.py
 ```
 ├── ingest.py   # Fetch, parse and store the XML feed
 ├── stats.py    # SQL queries on the database
-├── tests.py    # Unit tests
-└── ca.crt      # SSL certificate (required)
+└── tests.py    # Unit tests
 ```
 
 ## Database schema
 ```
-program (id, start_time, title, subtitle, duration, type, description)
-person  (id, firstname, lastname)
-casting (personid, programid, function)
+program (id, channel, start_time, stop_time, duration, title, description)
 ```
 
 ## Notes
 
-- `ca.crt` must be present in the root directory
 - `epg.sqlite` is generated automatically on first run
+- Any XMLTV-compatible feed URL can be used
