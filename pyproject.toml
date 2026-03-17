@@ -1,0 +1,9 @@
+[project]
+name = "epg-ingest"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Fetch, parse and index an EPG XML feed into SQLite"
+
+[project.scripts]
+ingest = "ingest:main"
+stats = "stats:main"

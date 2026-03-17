@@ -1,0 +1,17 @@
+# Environnement virtuel
+.venv/
+
+# Base de données générée
+epg.sqlite
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
