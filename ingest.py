@@ -1,15 +1,14 @@
+import argparse
 import logging
 import sqlite3
-import ssl
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
+
 # Constants
-EPG_URL = "https://testepg.r0ro.fr/epg.xml"
-CA_CERT = Path("ca.crt")
 DB_PATH = Path("epg.sqlite")
 
 # Logging
@@ -20,21 +19,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def parse_time(raw: str) -> datetime:
+    """Parse '20260317024000 +0000' → datetime."""
+    return datetime.strptime(raw.strip(), "%Y%m%d%H%M%S %z")
+
+
 # Fetch
-def fetch_xml() -> str:
+def fetch_xml(url: str) -> str:
     """Download the EPG XML file from the remote server."""
-    logger.info("Fetching EPG from %s", EPG_URL)
-
-    # Create SSL context with CA certificate
-    if not CA_CERT.exists():
-        logger.error("CA certificate not found at %s", CA_CERT)
-        raise FileNotFoundError(f"CA certificate not found at {CA_CERT}")
-
-    ssl_context = ssl.create_default_context(cafile=CA_CERT)
+    logger.info("Fetching EPG from %s", url)
 
     # Fetch the XML data
     try:
-        with urllib.request.urlopen(EPG_URL, context=ssl_context) as response:
+        with urllib.request.urlopen(url) as response:
             xml_data = response.read().decode("utf-8")
     except urllib.error.URLError as e:
         logger.error("Failed to fetch EPG: %s", e)
@@ -52,27 +49,17 @@ def parse_xml(xml_data: str) -> list[dict]:
     root = ET.fromstring(xml_data)
     programs = []
 
-    # The diff between "get" and "findtext"
-    # is that get returns None if the element is not found,
-    #  while findtext returns a default value (empty string in this case)
-    for programme in root.findall("program"):
+    for programme in root.findall("programme"):
+        start = parse_time(programme.get("start", ""))
+        stop = parse_time(programme.get("stop", ""))
+
         programs.append({
-            "start_time": datetime.fromisoformat(
-                programme.get("start_time", "")
-            ),
-            "title": programme.findtext("title", ""),
-            "subtitle": programme.findtext("subtitle", ""),
-            "duration": int(programme.findtext("duration", "0")),
-            "type": programme.findtext("type", ""),
-            "description": programme.findtext("description", ""),
-            "persons": [
-                {
-                    "firstname": person.get("firstname", ""),
-                    "lastname": person.get("lastname", ""),
-                    "function": person.get("function", ""),
-                }
-                for person in programme.findall("casting/person")
-            ],
+            "channel":     programme.get("channel", ""),
+            "start_time":  parse_time(programme.get("start", "")),
+            "stop_time":   parse_time(programme.get("stop", "")),
+            "duration":    int((stop - start).total_seconds()),
+            "title":       programme.findtext("title", ""),
+            "description": programme.findtext("desc"),
         })
 
     logger.info("Parsed %d programs", len(programs))
@@ -84,106 +71,54 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS program (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel TEXT,
             start_time DATETIME,
+            stop_time DATETIME,
             title TEXT,
-            subtitle TEXT,
-            duration INTEGER,
-            type TEXT,
             description TEXT,
             UNIQUE(start_time, title)
-        );
-        CREATE TABLE IF NOT EXISTS person (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            firstname TEXT,
-            lastname TEXT,
-            UNIQUE(firstname, lastname)
-        );
-        CREATE TABLE IF NOT EXISTS casting (
-            personid INTEGER,
-            programid INTEGER,
-            function TEXT,
-            UNIQUE(personid, programid, function)
         );
     """)
     conn.commit()
     logger.info("Database initialized")
 
 
-def get_or_create_person(conn: sqlite3.Connection, person: dict) -> int:
-    """Get existing person id or create a new one.
-    Returns the person id.
-    """
-    existing = conn.execute(
-        "SELECT id FROM person WHERE firstname=? AND lastname=?",
-        (person["firstname"], person["lastname"]),
-    ).fetchone()
-
-    if existing:
-        return existing[0]
-
-    # if person doesn't exist, create it
-    cursor = conn.execute(
-        "INSERT INTO person (firstname, lastname) VALUES (?, ?)",
-        (person["firstname"], person["lastname"]),
-    )
-    return cursor.lastrowid or 0
-
-
-def get_or_create_program(conn: sqlite3.Connection, program: dict) -> int:
-    """Get existing programm id or create a new one
-    Returns the program id.
-    """
-    existing = conn.execute(
-        "SELECT id FROM program WHERE start_time=? AND title=?",
-        (program["start_time"].isoformat(), program["title"])
-    ).fetchone()
-
-    if existing:
-        return existing[0]
-
-    # if program doesn't exist, create it
-    cursor = conn.execute(
-        "INSERT INTO program "
-        "(start_time, title, subtitle, duration, type, description) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (
-            program["start_time"].isoformat(),
-            program["title"],
-            program["subtitle"],
-            program["duration"],
-            program["type"],
-            program["description"]
-        )
-    )
-    return cursor.lastrowid or 0
-
-
 def store_db(conn: sqlite3.Connection, programs: list[dict]) -> None:
     """Store the programs and their castings in the database."""
-    for program in programs:
-        program_id = get_or_create_program(conn, program)
+    logger.info("Storing programs in the database...")
 
-        # Store the castings for each program
-        # After getting the program_id,
-        # we loop through the persons in the program
-        for person in program["persons"]:
-            person_id = get_or_create_person(conn, person)
-            # Then we insert a row in the casting table
-            # with the person_id, program_id, and function
-            conn.execute(
-                "INSERT INTO casting "
-                "(personid, programid, function) VALUES (?, ?, ?)",
-                (person_id, program_id, person["function"])
-            )
+    values = [
+        (
+            program["channel"],
+            program["start_time"].isoformat(),
+            program["stop_time"].isoformat(),
+            program["title"],
+            program["description"],
+        )
+        for program in programs
+    ]
+
+    conn.executemany("""
+        INSERT OR IGNORE INTO program (channel, start_time, stop_time,
+         title, description) VALUES (?, ?, ?, ?, ?)
+    """, values)
 
     conn.commit()
-    logger.info("Programs stored in database successfully")
+
+    logger.info("Stored %d programs in the database", len(programs))
+
+
+# argparse file
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Fetch and store an EPG feed")
+    parser.add_argument("url", help="URL of the EPG feed (XML or JSON)")
+    return parser.parse_args()
 
 
 # fetch_xml and parse_xml functions and database functions
 def main() -> None:
     """Main function."""
-    xml_data = fetch_xml()
+    xml_data = fetch_xml(parse_args().url)
     programs = parse_xml(xml_data)
 
     with sqlite3.connect(DB_PATH) as conn:
